@@ -192,7 +192,7 @@ void I2C1_RunUpdating() {
   HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_OUT_REG, 1, i2c_byte_buff, 1);
 }
 
-void HAL_I2C_MemRxCpltCallback(I2C_TypeDef* hi2c) {
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
   if (hi2c == &hi2c1) {
     if (keyboard_curr_line < 0) {
       keyboard_curr_line = 0;
@@ -204,7 +204,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_TypeDef* hi2c) {
   }
 }
 
-void HAL_I2C_MemTxCpltCallback(I2C_TypeDef* hi2c) {
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c) {
   if (hi2c == &hi2c1) {
     keybord_lines_buff[keyboard_curr_line] = *i2c_byte_buff;
     if (keyboard_curr_line == 3) {
@@ -283,7 +283,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  RingBuffer_Init(&uart6_tx_buff, __uart6_tx_buff, TX6_BUFFER_SIZE);
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
