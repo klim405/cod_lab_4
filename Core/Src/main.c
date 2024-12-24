@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "i2c.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -57,9 +58,14 @@ RingBuffer uart6_tx_buff;
 bool UART6_TX_IsReady = true;
 char uart6_tx_byte_buff[1];
 
+enum I2C_Status {
+  I2C_WRITE_COMPLETE = 0,
+  I2C_READ_COMPLETE
+};
+enum I2C_Status i2c_status;
 uint8_t i2c_byte_buff[1];
 uint8_t keybord_lines_buff[4];
-int8_t keyboard_curr_line = -1;
+int8_t keyboard_curr_line = -2;
 
 char KeyBoard_PressedSymbol;
 bool KeyBoard_HasPressedSymbol = false;
@@ -194,33 +200,42 @@ void KeyBoard_DefineSymbol() {
   } 
 }
 
-void I2C1_RunUpdating() {
-  *i2c_byte_buff = 0;
-  HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_OUT_REG, 1, i2c_byte_buff, 1);
-}
-
-void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c) {
-  if (hi2c == &hi2c1) {
-    if (keyboard_curr_line < 0) {
-      keyboard_curr_line = 0;
-      *i2c_byte_buff = ~1;
-      HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_CONFIG_REG, 1, i2c_byte_buff, 1);
-    } else {
-      HAL_I2C_Mem_Read_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_IN_REG, 1, i2c_byte_buff, 1);
-    }
+void I2C1_MemWriteCpltCallback() {
+  if (keyboard_curr_line < 0) {
+    keyboard_curr_line = 0;
+    *i2c_byte_buff = ~1;
+    HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_CONFIG_REG, 1, i2c_byte_buff, 1);
+    i2c_status = I2C_WRITE_COMPLETE;
+  } else {
+    HAL_I2C_Mem_Read_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_IN_REG, 1, i2c_byte_buff, 1);
+    i2c_status = I2C_READ_COMPLETE;
   }
 }
 
-void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
-  if (hi2c == &hi2c1) {
-    keybord_lines_buff[keyboard_curr_line] = *i2c_byte_buff;
-    if (keyboard_curr_line == 3) {
-      keyboard_curr_line = 0;
-    } else {
+void I2C1_MemReadCpltCallback() {
+  keybord_lines_buff[keyboard_curr_line] = *i2c_byte_buff;
+  if (keyboard_curr_line == 3) {
+    keyboard_curr_line = 0;
+  } else {
+    ++keyboard_curr_line;
+  }
+  *i2c_byte_buff = ~(1 << keyboard_curr_line);
+  HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_CONFIG_REG, 1, i2c_byte_buff, 1);
+  i2c_status = I2C_WRITE_COMPLETE;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim->Instance == TIM6) {
+    if (keyboard_curr_line = -2) {
+      *i2c_byte_buff = 0;
+      HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_OUT_REG, 1, i2c_byte_buff, 1);
       ++keyboard_curr_line;
     }
-    *i2c_byte_buff = ~(1 << keyboard_curr_line);
-    HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_CONFIG_REG, 1, i2c_byte_buff, 1);
+    if (i2c_status == I2C_WRITE_COMPLETE) {
+      I2C1_MemWriteCpltCallback();
+    } else {
+      I2C1_MemReadCpltCallback();
+    }
   }
 }
 
@@ -313,6 +328,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART6_UART_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -346,16 +362,27 @@ void SystemClock_Config(void)
   /** Configure the main internal regulator output voltage
   */
   __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 15;
+  RCC_OscInitStruct.PLL.PLLN = 216;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Activate the Over-Drive mode
+  */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
   {
     Error_Handler();
   }
@@ -364,12 +391,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
