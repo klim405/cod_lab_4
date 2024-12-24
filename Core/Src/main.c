@@ -105,11 +105,12 @@ bool UART6_TransmitByte(char byte) {
       RingBuffer_Write(&uart6_tx_buff, &byte, 1);
       result = true;
     }
+  UART6_TryToTransmit_IT();
   return result;
 }
 
 /**
- * @brief Отправляет строку по uart
+ * @brief Получает байт по uart
  * @return true - данные записан в буфер отправки
  * @return false - буфер отправки переполнен
  */
@@ -118,12 +119,18 @@ bool UART6_TransmitString(char* str) {
   if (!uart6_tx_buff.isFull) {
     RingBuffer_Write(&uart6_tx_buff, str, strlen(str));
   }
+  UART6_TryToTransmit_IT();
   return result;
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef* UartHandle) {
   if (UartHandle == &huart6) {
-    UART6_TX_IsReady = true;
+    if (!RingBuffer_IsEmpty(&uart6_tx_buff)) {
+      RingBuffer_Read(&uart6_tx_buff, uart6_tx_byte_buff, 1);
+      HAL_UART_Transmit_IT(&huart6, (uint8_t*) uart6_tx_byte_buff, 1);
+    } else {
+      UART6_TX_IsReady = true;
+    }
   }
 }
 
@@ -192,7 +199,7 @@ void I2C1_RunUpdating() {
   HAL_I2C_Mem_Write_IT(&hi2c1, KEY_BOARD_ADDRESS, KB_GPIO_OUT_REG, 1, i2c_byte_buff, 1);
 }
 
-void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
+void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c) {
   if (hi2c == &hi2c1) {
     if (keyboard_curr_line < 0) {
       keyboard_curr_line = 0;
@@ -204,7 +211,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
   }
 }
 
-void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef* hi2c) {
+void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef* hi2c) {
   if (hi2c == &hi2c1) {
     keybord_lines_buff[keyboard_curr_line] = *i2c_byte_buff;
     if (keyboard_curr_line == 3) {
@@ -315,7 +322,6 @@ int main(void)
   I2C1_RunUpdating();
   while (1)
   {
-    UART6_TryToTransmit_IT();
     if (KeyBoard_HasPressedSymbol && KeyBoard_PressedSymbol != '\0') {
       UART6_TransmitByte(KeyBoard_PressedSymbol);
       KeyBoard_HasPressedSymbol = false;
