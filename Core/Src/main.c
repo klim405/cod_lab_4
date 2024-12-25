@@ -168,7 +168,7 @@ char KeyBoard_DecodeKey(int8_t key_number) {
 }
 
 void KeyBoard_DefineSymbol() {
-  bool cmdIsSet = (keybord_lines_buff[4] == 0x4);
+  bool cmdIsSet = (keybord_lines_buff[4] == 0x01);
   int8_t total = 0;
   int8_t sym = 0;
   uint8_t curr_line;
@@ -177,7 +177,7 @@ void KeyBoard_DefineSymbol() {
     for (int8_t j = 0; j < 3; j++) {
       if ((curr_line >> j) & 0x1) {
         ++total;
-        sym += i*j;
+        sym += i*3+j;
       }
     }
   }
@@ -188,6 +188,8 @@ void KeyBoard_DefineSymbol() {
       KeyBoard_PressedSymbol = curr_char;
       KeyBoard_HasPressedSymbol = true;
     }
+  } else {
+    KeyBoard_PressedSymbol = '\0';
   }
 }
 
@@ -208,7 +210,7 @@ uint8_t KeyBoard_RefreshLine(int8_t line) {
   I2C1_GPIOExpander_Write(GPIO_EXP_OUT_REG, &tmp, 1);
   tmp = ~(1 << line);
   I2C1_GPIOExpander_Write(GPIO_EXP_CONFIG_REG, &tmp, 1);
-  HAL_Delay(100);
+  HAL_Delay(10);
   tmp = 0;
   I2C1_GPIOExpander_Read(GPIO_EXP_IN_REG, &tmp, 1);
   return (tmp >> 4) & 0x7;
