@@ -40,9 +40,9 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define TX6_BUFFER_SIZE 100
+#define TX6_BUFFER_SIZE 1000
 
-#define I2C_TIMEOUT 50
+#define I2C_TIMEOUT 100
 #define GPIO_EXPANDER_ADDRESS 0xE2
 #define GPIO_EXP_IN_REG 0x00
 #define GPIO_EXP_OUT_REG 0x01
@@ -56,13 +56,13 @@
 char __uart6_tx_buff[TX6_BUFFER_SIZE];
 RingBuffer uart6_tx_buff;
 bool UART6_TX_IsReady = true;
-char uart6_tx_byte_buff[1];
+uint8_t uart6_tx_byte_buff[4];
 
 enum I2C_Status {
   I2C_WRITE_COMPLETE,
   I2C_READ_COMPLETE = 0,
 };
-enum I2C_Status keyboard_i2c_status;
+enum I2C_Status keyboard_i2c_status = I2C_READ_COMPLETE;
 uint8_t keyboard_i2c_byte_buff[1];
 uint8_t keybord_lines_buff[4];
 int8_t keyboard_curr_line = -1;
@@ -157,55 +157,38 @@ char KeyBoard_DecodeKey(int8_t key_number) {
     return ((char) key_number) + '1';
   }
   switch (key_number) {
+    case 9: return '=';
     case 10: return '0';
-    case 11: return '=';
-    case 12: return '+';
-    case 13: return '-';
-    case 14: return '*';
-    case 15: return '/';
+    case 11: return '+';
+    case 12: return '-';
+    case 13: return '*';
+    case 14: return '/';
     default: return '\0';
   }
 }
 
 void KeyBoard_DefineSymbol() {
-  UART6_TransmitString("KeyBoard_DefineSymbol");
-  UART6_TransmitByte('\0');
-  UART6_TransmitByte(keybord_lines_buff[0]);
-  UART6_TransmitByte(keybord_lines_buff[1]);
-  UART6_TransmitByte(keybord_lines_buff[2]);
-  UART6_TransmitByte(keybord_lines_buff[3]);
-  int8_t curr_key = 0;
+  bool cmdIsSet = (keybord_lines_buff[4] == 0x4);
+  int8_t total = 0;
+  int8_t sym = 0;
   uint8_t curr_line;
-  int8_t pressed_keys[12] = { -1 };
-  int8_t total_pressed_keys = 0;
-  uint8_t masking_line = 0;
-
   for (int8_t i = 0; i < 4; i++) {
     curr_line = keybord_lines_buff[i];
     for (int8_t j = 0; j < 3; j++) {
-      masking_line = curr_line && (1 << (j + 4));
-      if (masking_line == 0) {
-        pressed_keys[total_pressed_keys] = i * 4 + j;
-        ++total_pressed_keys;
+      if ((curr_line >> j) & 0x1) {
+        ++total;
+        sym += i*j;
       }
     }
   }
-
-  if (total_pressed_keys > 2) return;
-  if (total_pressed_keys == 2 && pressed_keys[0] != 9 && pressed_keys[1] != 9) return;
-  if (total_pressed_keys == 1 && pressed_keys[0] == 9) return;
-
-  if (total_pressed_keys == 2) {
-    curr_key = pressed_keys[0] + pressed_keys[1] - 9 + 12;
-  } else {
-    curr_key = pressed_keys[0];
+  char curr_char;
+  if ((cmdIsSet && total == 2) || (!cmdIsSet && total == 1)) {
+    curr_char = KeyBoard_DecodeKey(sym);
+    if (KeyBoard_PressedSymbol != curr_char) {
+      KeyBoard_PressedSymbol = curr_char;
+      KeyBoard_HasPressedSymbol = true;
+    }
   }
-
-  char currSym = KeyBoard_DecodeKey(curr_key);
-  if (currSym != KeyBoard_PressedSymbol) {
-    KeyBoard_PressedSymbol = currSym;
-    KeyBoard_HasPressedSymbol = true;
-  } 
 }
 
 HAL_StatusTypeDef I2C1_GPIOExpander_Write(uint16_t RegAddess, uint8_t* Buffer, uint16_t Size) {
@@ -213,46 +196,33 @@ HAL_StatusTypeDef I2C1_GPIOExpander_Write(uint16_t RegAddess, uint8_t* Buffer, u
 }
 
 HAL_StatusTypeDef I2C1_GPIOExpander_Read(uint16_t RegAddess, uint8_t* Buffer, uint16_t Size) {
-  return HAL_I2C_Mem_Read(&hi2c1, GPIO_EXPANDER_ADDRESS | 1, RegAddess, 1, Buffer, Size, I2C_TIMEOUT);
+  return HAL_I2C_Mem_Read(&hi2c1, GPIO_EXPANDER_ADDRESS, RegAddess, 1, Buffer, Size, I2C_TIMEOUT);
 }
 
-HAL_StatusTypeDef KeyBoard_I2C1_Reset() {
-  *keyboard_i2c_byte_buff = 0;
-  return I2C1_GPIOExpander_Write(GPIO_EXP_OUT_REG, keyboard_i2c_byte_buff, 1);
-}
-
-HAL_StatusTypeDef KeyBoard_I2C1_ActivateCurrentLine() {
-  *keyboard_i2c_byte_buff = ~(1 << keyboard_curr_line);
-  return I2C1_GPIOExpander_Write(GPIO_EXP_CONFIG_REG, keyboard_i2c_byte_buff, 1);
-}
-
-HAL_StatusTypeDef KeyBoard_I2C1_ReadLine() {
+uint8_t KeyBoard_RefreshLine(int8_t line) {
   HAL_StatusTypeDef status;
-  status = I2C1_GPIOExpander_Read(GPIO_EXP_IN_REG, keyboard_i2c_byte_buff, 1);
-  keybord_lines_buff[keyboard_curr_line] = *keyboard_i2c_byte_buff;
-  return status;
+  uint8_t tmp;
+  tmp = ~(1 << line);
+  I2C1_GPIOExpander_Write(GPIO_EXP_INV_REG, &tmp, 1);
+  tmp = ~(1 << line);
+  I2C1_GPIOExpander_Write(GPIO_EXP_OUT_REG, &tmp, 1);
+  tmp = ~(1 << line);
+  I2C1_GPIOExpander_Write(GPIO_EXP_CONFIG_REG, &tmp, 1);
+  HAL_Delay(100);
+  tmp = 0;
+  I2C1_GPIOExpander_Read(GPIO_EXP_IN_REG, &tmp, 1);
+  return (tmp >> 4) & 0x7;
 }
 
-HAL_StatusTypeDef KeyBoard_Refresh() {
-  HAL_StatusTypeDef status;
-  if (keyboard_curr_line < 0) {
-    status = KeyBoard_I2C1_Reset();
-    ++keyboard_curr_line;
-  } else {
-    if (keyboard_i2c_status == I2C_WRITE_COMPLETE) {
-      status = KeyBoard_I2C1_ReadLine();
-      keyboard_i2c_status = I2C_READ_COMPLETE;
-      ++keyboard_curr_line;
-      if (keyboard_curr_line > 3) {
-        KeyBoard_DefineSymbol();
-        keyboard_curr_line = -1;
-      }
-    } else { // I2C_READ_COMPLETE
-      status = KeyBoard_I2C1_ActivateCurrentLine();
-      keyboard_i2c_status = I2C_WRITE_COMPLETE;
-    }
+void KeyBoard_Refresh() {
+  uint8_t tmp = KeyBoard_RefreshLine(keyboard_curr_line);
+  // HAL_UART_Transmit(&huart6, &tmp, 1, 40);
+  keybord_lines_buff[keyboard_curr_line] = tmp;
+  ++keyboard_curr_line;
+  if (keyboard_curr_line > 3) {
+    keyboard_curr_line = 0;
+    KeyBoard_DefineSymbol();
   }
-  return status;
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
@@ -363,9 +333,7 @@ int main(void)
   {
     if (KeyBoard_IsRefreshTime) {
       KeyBoard_IsRefreshTime = false;
-      if (KeyBoard_Refresh() == HAL_ERROR) {
-        UART6_TransmitString("I2C Error\n");
-      }
+      KeyBoard_Refresh();
     }
     if (KeyBoard_HasPressedSymbol && KeyBoard_PressedSymbol != '\0') {
       UART6_TransmitByte(KeyBoard_PressedSymbol);
